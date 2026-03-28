@@ -1,0 +1,1 @@
+# Exceptions unit tests package for firefeed-api

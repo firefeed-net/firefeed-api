@@ -1,0 +1,264 @@
+"""
+Authentication utilities for FireFeed Internal API
+
+This module provides authentication utilities for internal API endpoints
+and service-to-service communication.
+"""
+
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+from fastapi import HTTPException, status, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import jwt
+from loguru import logger
+
+from .models import ServiceTokenResponse, ServiceAuthResponse
+from .config import get_settings
+
+# Get application settings
+settings = get_settings()
+
+# HTTP Bearer authentication scheme
+security = HTTPBearer()
+
+# Service tokens cache (in production, use Redis)
+_service_tokens: Dict[str, Dict[str, Any]] = {}
+
+
+def create_service_token(
+    service_name: str,
+    expires_delta: Optional[timedelta] = None
+) -> ServiceTokenResponse:
+    """
+    Create a service authentication token
+    
+    Args:
+        service_name: Name of the service
+        expires_delta: Token expiration time delta
+        
+    Returns:
+        ServiceTokenResponse with token and metadata
+    """
+    if expires_delta is None:
+        expires_delta = timedelta(minutes=settings.access_token_expire_minutes)
+    
+    expire = datetime.utcnow() + expires_delta
+    payload = {
+        "service_name": service_name,
+        "exp": expire,
+        "iat": datetime.utcnow(),
+        "type": "service"
+    }
+    
+    token = jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
+    
+    # Cache the token
+    _service_tokens[token] = {
+        "service_name": service_name,
+        "expires_at": expire,
+        "created_at": datetime.utcnow()
+    }
+    
+    logger.info(f"Created service token for {service_name}")
+    
+    return ServiceTokenResponse(
+        token=token,
+        service_name=service_name,
+        expires_at=expire.isoformat(),
+        created_at=datetime.utcnow().isoformat()
+    )
+
+
+def verify_service_token(token: str) -> ServiceAuthResponse:
+    """
+    Verify a service authentication token
+    
+    Args:
+        token: JWT token to verify
+        
+    Returns:
+        ServiceAuthResponse with service information
+        
+    Raises:
+        HTTPException: If token is invalid or expired
+    """
+    try:
+        # Check if token is in cache
+        if token not in _service_tokens:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid service token",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+        
+        # Decode token
+        payload = jwt.decode(
+            token,
+            settings.secret_key,
+            algorithms=[settings.algorithm]
+        )
+        
+        # Check token type
+        if payload.get("type") != "service":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token type",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+        
+        service_name = payload.get("service_name")
+        expires_at = payload.get("exp")
+        
+        # Check expiration
+        if datetime.utcnow().timestamp() > expires_at:
+            # Remove expired token from cache
+            if token in _service_tokens:
+                del _service_tokens[token]
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has expired",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+        
+        logger.info(f"Verified service token for {service_name}")
+        
+        return ServiceAuthResponse(
+            service_name=service_name,
+            token_valid=True,
+            expires_at=datetime.fromtimestamp(expires_at).isoformat(),
+            issued_at=payload.get("iat")
+        )
+        
+    except jwt.PyJWTError as e:
+        logger.error(f"Token verification failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
+
+def get_service_from_token(token: str) -> str:
+    """
+    Get service name from token
+    
+    Args:
+        token: JWT token
+        
+    Returns:
+        Service name
+        
+    Raises:
+        HTTPException: If token is invalid
+    """
+    auth_response = verify_service_token(token)
+    return auth_response.service_name
+
+
+def is_valid_service_token(token: str) -> bool:
+    """
+    Check if service token is valid
+    
+    Args:
+        token: JWT token to check
+        
+    Returns:
+        True if token is valid, False otherwise
+    """
+    try:
+        verify_service_token(token)
+        return True
+    except HTTPException:
+        return False
+
+
+async def verify_service_auth(
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+) -> ServiceAuthResponse:
+    """
+    Verify service authentication for internal endpoints
+    
+    Args:
+        credentials: HTTP authorization credentials
+        
+    Returns:
+        ServiceAuthResponse with service information
+        
+    Raises:
+        HTTPException: If authentication fails
+    """
+    token = credentials.credentials
+    
+    # Check if token is the internal API token
+    if token == settings.internal_api_token:
+        return ServiceAuthResponse(
+            service_name="internal-api",
+            token_valid=True,
+            expires_at=None,
+            issued_at=datetime.utcnow().isoformat()
+        )
+    
+    # Verify as JWT token
+    return verify_service_token(token)
+
+
+def cleanup_expired_tokens() -> None:
+    """
+    Clean up expired tokens from cache
+    """
+    current_time = datetime.utcnow()
+    expired_tokens = []
+    
+    for token, token_info in _service_tokens.items():
+        if current_time > token_info["expires_at"]:
+            expired_tokens.append(token)
+    
+    for token in expired_tokens:
+        del _service_tokens[token]
+    
+    if expired_tokens:
+        logger.info(f"Cleaned up {len(expired_tokens)} expired tokens")
+
+
+def get_active_service_tokens() -> Dict[str, Dict[str, Any]]:
+    """
+    Get all active service tokens
+    
+    Returns:
+        Dictionary of active tokens
+    """
+    return _service_tokens.copy()
+
+
+def revoke_service_token(token: str) -> bool:
+    """
+    Revoke a service token
+    
+    Args:
+        token: Token to revoke
+        
+    Returns:
+        True if token was revoked, False if not found
+    """
+    if token in _service_tokens:
+        del _service_tokens[token]
+        logger.info(f"Revoked service token")
+        return True
+    return False
+
+
+def revoke_all_service_tokens() -> int:
+    """
+    Revoke all service tokens
+    
+    Returns:
+        Number of tokens revoked
+    """
+    count = len(_service_tokens)
+    _service_tokens.clear()
+    logger.info(f"Revoked {count} service tokens")
+    return count
+
+
+# Service authentication dependency
+ServiceAuthDep = Depends(verify_service_auth)
