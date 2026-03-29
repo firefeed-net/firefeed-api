@@ -27,7 +27,6 @@ from services.redis_service import RedisService
 from middleware import setup_middleware
 from routers import setup_routers
 from versioning import setup_versioning
-from docs import setup_docs
 
 # Setup logging
 setup_logging()
@@ -115,9 +114,6 @@ def create_app() -> FastAPI:
     
     # Setup versioning
     setup_versioning(app)
-    
-    # Setup documentation
-    setup_docs(app)
     
     return app
 

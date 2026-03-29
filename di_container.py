@@ -10,7 +10,6 @@ from dependency_injector.wiring import Provide, inject
 
 from .config.environment import get_settings
 from .config.logging_config import setup_logging
-from .database.init import database_initializer
 from .services.public_api_client import PublicAPIClient
 from .services.user_service import UserService
 from .services.rss_service import RSSService
@@ -67,11 +66,6 @@ class Container(containers.DeclarativeContainer):
     # Cache service
     cache_service = providers.Singleton(
         lambda: cache_service
-    )
-    
-    # Database initializer
-    database_initializer = providers.Singleton(
-        lambda: database_initializer
     )
     
     # Services

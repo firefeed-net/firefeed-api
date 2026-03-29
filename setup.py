@@ -53,7 +53,6 @@ setup(
     entry_points={
         "console_scripts": [
             "firefeed-api=firefeed_api.main:main",
-            "firefeed-api-cli=firefeed_api.cli:main",
         ],
     },
     include_package_data=True,

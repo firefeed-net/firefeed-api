@@ -94,12 +94,6 @@ Microservices-based RSS feed management API with full backward compatibility sup
 ```bash
 # Build and start services
 docker-compose up -d
-
-# Run migrations
-docker-compose exec firefeed-api python -m firefeed-api.cli migrate
-
-# Seed database
-docker-compose exec firefeed-api python -m firefeed-api.cli seed
 ```
 
 #### As Part of FireFeed Platform
@@ -242,7 +236,7 @@ The API service integrates with:
 The database uses PostgreSQL with the following key tables:
 
 - **users** - User accounts and authentication
-- **rss_data** - RSS items (renamed from `published_news_data`)
+- **rss_data** - RSS items
 - **categories** - Content categories
 - **sources** - RSS feed sources
 - **rss_feeds** - RSS feed subscriptions
@@ -276,9 +270,7 @@ firefeed-api/
 │   ├── monitoring/            # Health checks and metrics
 │   ├── cache/                 # Caching utilities
 │   ├── background_tasks/      # Background task management
-│   └── cli.py                 # Command line interface
 ├── tests/                     # Test suite
-├── docs/                      # Documentation
 ├── scripts/                   # Development scripts
 ├── .github/                   # GitHub Actions workflows
 └── docker/                    # Docker configuration
@@ -395,7 +387,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - [API Documentation](https://docs.firefeed.net)
 - [Migration Guide](MIGRATION_GUIDE.md)
-- [API Contracts](docs/api-contracts.md)
 - [FireFeed Platform Documentation](https://github.com/firefeed-net/firefeed)
 
 ### Getting Help

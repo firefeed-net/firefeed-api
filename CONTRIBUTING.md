@@ -97,8 +97,6 @@ pytest tests/test_backward_compatibility.py
 
 Please update documentation when adding new features:
 
-- Update API documentation in `docs/api-reference.md`
-- Update API contracts in `docs/api-contracts.md`
 - Update this file if needed
 
 ## Development Guidelines
