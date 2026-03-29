@@ -267,7 +267,6 @@ firefeed-api/
 │   ├── middleware/            # FastAPI middleware
 │   ├── database/              # Database utilities
 │   ├── config/                # Configuration
-│   ├── monitoring/            # Health checks and metrics
 │   ├── cache/                 # Caching utilities
 │   ├── background_tasks/      # Background task management
 ├── tests/                     # Test suite

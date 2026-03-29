@@ -216,6 +216,20 @@ class CacheService:
             print(f"Cache stats error: {e}")
             return {}
     
+    def cleanup_expired(self) -> None:
+        """
+        Clean up expired cache entries
+        
+        Note: Redis automatically handles expired keys, so this method
+        primarily serves as a logging/notification mechanism.
+        """
+        try:
+            # Redis automatically removes expired keys, but we can log the action
+            print("Cache cleanup completed - expired keys handled by Redis")
+            
+        except Exception as e:
+            print(f"Cache cleanup error: {e}")
+    
     def flush(self) -> bool:
         """
         Flush all cache data
