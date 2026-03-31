@@ -135,20 +135,23 @@ class InternalErrorHandlingMiddleware:
             )
 
 
+import os
+
 class InternalRateLimitingMiddleware:
     """Middleware for rate limiting internal API requests"""
     
-    def __init__(self, max_requests: int = 1000, window_seconds: int = 60):
+    def __init__(self):
         """
-        Initialize rate limiting middleware
-        
-        Args:
-            max_requests: Maximum requests per window
-            window_seconds: Time window in seconds
+        Initialize rate limiting middleware with env-configurable limits
         """
-        self.max_requests = max_requests
-        self.window_seconds = window_seconds
+        self.max_requests = int(os.getenv('INTERNAL_RATE_LIMIT_MAX', '5000'))
+        self.window_seconds = int(os.getenv('INTERNAL_RATE_WINDOW_SECONDS', '60'))
         self.requests: dict = {}
+
+        # Per-path adjustments
+        self.path_limits = {
+            '/api/v1/internal/rss/items': self.max_requests * 2,  # 10k/min for RSS duplicates
+        }
     
     async def __call__(self, request: Request, call_next: Callable) -> Response:
         """
@@ -161,8 +164,19 @@ class InternalRateLimitingMiddleware:
         Returns:
             Response object
         """
+        path = request.url.path
+        
+        # Bypass rate limiting for RSS duplicate checks
+        if path == '/api/v1/internal/rss/items':
+            logger.debug(f"Bypassing rate limit for RSS duplicate check: {path}")
+            return await call_next(request)
+        
         # Get client identifier (service name)
         service_name = getattr(request.state, 'service_auth', {}).get('service_name', 'unknown')
+        
+        # Path-specific limit
+        path = request.url.path
+        effective_limit = self.path_limits.get(path, self.max_requests)
         
         # Get current time
         current_time = time.time()
@@ -181,8 +195,8 @@ class InternalRateLimitingMiddleware:
         ]
         
         # Check rate limit
-        if len(service_requests) >= self.max_requests:
-            logger.warning(f"Rate limit exceeded for service: {service_name}")
+        if len(service_requests) >= effective_limit:
+            logger.warning(f"Rate limit exceeded for service: {service_name}, path: {path}, limit: {effective_limit}")
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 content=ErrorResponse(
@@ -191,7 +205,7 @@ class InternalRateLimitingMiddleware:
                     error_code="RATE_LIMIT_EXCEEDED",
                     details={
                         "message": f"Too many requests from service {service_name}",
-                        "limit": self.max_requests,
+                        "limit": effective_limit,
                         "window": self.window_seconds
                     }
                 ).dict()
