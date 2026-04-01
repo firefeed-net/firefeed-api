@@ -136,6 +136,8 @@ class InternalErrorHandlingMiddleware:
 
 
 import os
+from firefeed_api.services.redis_service import RedisService
+from firefeed_api.services.rate_limit_service import RateLimitService
 
 class InternalRateLimitingMiddleware:
     """Middleware for rate limiting internal API requests"""
@@ -144,13 +146,17 @@ class InternalRateLimitingMiddleware:
         """
         Initialize rate limiting middleware with env-configurable limits
         """
-        self.max_requests = int(os.getenv('INTERNAL_RATE_LIMIT_MAX', '5000'))
+        self.redis_service = RedisService()
+        self.rate_limiter = RateLimitService(self.redis_service)
+        self.max_requests = int(os.getenv('INTERNAL_RATE_LIMIT_MAX', '10000'))
         self.window_seconds = int(os.getenv('INTERNAL_RATE_WINDOW_SECONDS', '60'))
-        self.requests: dict = {}
+        self.rss_multiplier = int(os.getenv('RSS_RATE_MULTIPLIER', '10'))
+        self.requests: dict = {}  # Fallback
+
 
         # Per-path adjustments
         self.path_limits = {
-            '/api/v1/internal/rss/items': self.max_requests * 2,  # 10k/min for RSS duplicates
+'/api/v1/internal/rss/items': self.max_requests * 10,  # 100k/min for RSS high-volume
         }
     
     async def __call__(self, request: Request, call_next: Callable) -> Response:
@@ -167,7 +173,7 @@ class InternalRateLimitingMiddleware:
         path = request.url.path
         
         # Bypass rate limiting for RSS duplicate checks
-        if path == '/api/v1/internal/rss/items':
+        if '/rss/items' in path:  # More robust match for POST /rss/items
             logger.debug(f"Bypassing rate limit for RSS duplicate check: {path}")
             return await call_next(request)
         
@@ -181,22 +187,19 @@ class InternalRateLimitingMiddleware:
         # Get current time
         current_time = time.time()
         
-        # Clean up old requests
-        cutoff_time = current_time - self.window_seconds
-        self.requests = {
-            key: value for key, value in self.requests.items()
-            if value > cutoff_time
-        }
+        # Path-specific limit
+        effective_limit = self.path_limits.get(path, self.max_requests)
         
-        # Count requests for this service
-        service_requests = [
-            timestamp for key, timestamp in self.requests.items()
-            if key.startswith(f"{service_name}:")
-        ]
+        # Primary: Redis rate limiting
+        rate_key = f"internal_rate:{service_name}"
+        redis_result = self.rate_limiter.is_allowed(
+            key=rate_key,
+            limit=effective_limit * self.rss_multiplier if '/rss/items' in path else effective_limit,
+            window=self.window_seconds
+        )
         
-        # Check rate limit
-        if len(service_requests) >= effective_limit:
-            logger.warning(f"Rate limit exceeded for service: {service_name}, path: {path}, limit: {effective_limit}")
+        if not redis_result['allowed']:
+            logger.warning(f"Redis rate limit exceeded for {service_name}: {path}, remaining: {redis_result['remaining']}")
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 content=ErrorResponse(
@@ -206,13 +209,13 @@ class InternalRateLimitingMiddleware:
                     details={
                         "message": f"Too many requests from service {service_name}",
                         "limit": effective_limit,
-                        "window": self.window_seconds
+                        "window": self.window_seconds,
+                        "remaining": redis_result['remaining'],
+                        "retry_after": redis_result['reset_time'] - int(time.time())
                     }
                 ).dict()
             )
-        
-        # Record this request
-        self.requests[f"{service_name}:{current_time}"] = current_time
+
         
         return await call_next(request)
 
