@@ -45,32 +45,31 @@ class RSSFeedsListResponse(BaseModel):
     size: int
 
 class RSSItemCreate(BaseModel):
-    title: str
-    content: str
-    link: str
-    guid: str
+    news_id: str
+    original_title: str
+    original_content: str
+    source_url: str
     pub_date: str  # ISO date-time format
-    feed_id: int
+    rss_feed_id: int
     category_id: Optional[int] = None
     source_id: Optional[int] = None
-    language: str = "en"
-    image_url: Optional[str] = None
-    video_url: Optional[str] = None
+    original_language: str = "en"
+    image_filename: Optional[str] = None
+    video_filename: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
 
 class RSSItemResponse(BaseModel):
     news_id: str
-    title: str
-    content: str
-    link: str
-    guid: str
+    original_title: str
+    original_content: str
+    source_url: str
     pub_date: str  # ISO date-time format
-    feed_id: int
+    rss_feed_id: int
     category_id: Optional[int] = None
     source_id: Optional[int] = None
-    language: str
-    image_url: Optional[str] = None
-    video_url: Optional[str] = None
+    original_language: str
+    image_filename: Optional[str] = None
+    video_filename: Optional[str] = None
     created_at: str  # ISO date-time format
     updated_at: Optional[str] = None  # ISO date-time format
     is_published: bool = False
@@ -739,7 +738,7 @@ async def create_rss_item(item_data: RSSItemCreate):
                 # Check if news_id already exists
                 await cur.execute(
                     "SELECT news_id FROM rss_data WHERE news_id = %s",
-                    (item_data.guid,)
+                    (item_data.news_id,)
                 )
                 existing = await cur.fetchone()
                 
@@ -749,23 +748,22 @@ async def create_rss_item(item_data: RSSItemCreate):
                         """SELECT news_id, original_title, original_content, original_language, 
                                   category_id, image_filename, created_at, updated_at, rss_feed_id, source_url, video_filename
                            FROM rss_data WHERE news_id = %s""",
-                        (item_data.guid,)
+                        (item_data.news_id,)
                     )
                     row = await cur.fetchone()
                     
                     return RSSItemResponse(
                         news_id=row[0],
-                        title=row[1],
-                        content=row[2],
-                        link=row[9] or "",
-                        guid=row[0],
+                        original_title=row[1],
+                        original_content=row[2],
+                        source_url=row[9] or "",
                         pub_date=item_data.pub_date,
-                        feed_id=item_data.feed_id,
+                        rss_feed_id=row[8],
                         category_id=item_data.category_id,
                         source_id=item_data.source_id,
-                        language=item_data.language,
-                        image_url=item_data.image_url,
-                        video_url=item_data.video_url,
+                        original_language=item_data.original_language,
+                        image_filename=row[5],
+                        video_filename=row[10],
                         created_at=row[6].isoformat() if row[6] else None,
                         updated_at=row[7].isoformat() if row[7] else None,
                         is_published=False,
@@ -782,15 +780,15 @@ async def create_rss_item(item_data: RSSItemCreate):
                               category_id, image_filename, created_at, updated_at, rss_feed_id, source_url, video_filename
                 """
                 params = (
-                    item_data.guid,
-                    item_data.title,
-                    item_data.content,
-                    item_data.language,
+                    item_data.news_id,
+                    item_data.original_title,
+                    item_data.original_content,
+                    item_data.original_language,
                     item_data.category_id,
-                    item_data.image_url,
-                    item_data.feed_id,
-                    item_data.link,
-                    item_data.video_url
+                    item_data.image_filename,
+                    item_data.rss_feed_id,
+                    item_data.source_url,
+                    item_data.video_filename
                 )
                 
                 await cur.execute(query, params)
@@ -798,17 +796,16 @@ async def create_rss_item(item_data: RSSItemCreate):
                 
                 return RSSItemResponse(
                     news_id=row[0],
-                    title=row[1],
-                    content=row[2],
-                    link=row[9] or "",
-                    guid=row[0],
+                    original_title=row[1],
+                    original_content=row[2],
+                    source_url=row[9] or "",
                     pub_date=item_data.pub_date,
-                    feed_id=item_data.feed_id,
+                    rss_feed_id=item_data.rss_feed_id,
                     category_id=item_data.category_id,
                     source_id=item_data.source_id,
-                    language=item_data.language,
-                    image_url=item_data.image_url,
-                    video_url=item_data.video_url,
+                    original_language=item_data.original_language,
+                    image_filename=item_data.image_filename,
+                    video_filename=item_data.video_filename,
                     created_at=row[6].isoformat() if row[6] else None,
                     updated_at=row[7].isoformat() if row[7] else None,
                     is_published=False,
@@ -915,17 +912,16 @@ async def get_rss_items(
                 for row in rows:
                     items.append(RSSItemResponse(
                         news_id=row[0],
-                        title=row[1],
-                        content=row[2],
-                        link=row[9] or "",
-                        guid=row[0],
+                        original_title=row[1],
+                        original_content=row[2],
+                        source_url=row[9] or "",
                         pub_date=row[6].isoformat() if row[6] else None,
-                        feed_id=row[8],
+                        rss_feed_id=row[8],
                         category_id=row[4],
                         source_id=row[11],
-                        language=row[3],
-                        image_url=row[5],
-                        video_url=row[10],
+                        original_language=row[3],
+                        image_filename=row[5],
+                        video_filename=row[10],
                         created_at=row[6].isoformat() if row[6] else None,
                         updated_at=row[7].isoformat() if row[7] else None,
                         is_published=False,
@@ -969,17 +965,16 @@ async def get_rss_item_by_id(news_id: str):
                 
                 return RSSItemResponse(
                     news_id=row[0],
-                    title=row[1],
-                    content=row[2],
-                    link=row[9] or "",
-                    guid=row[0],
+                    original_title=row[1],
+                    original_content=row[2],
+                    source_url=row[9] or "",
                     pub_date=row[6].isoformat() if row[6] else None,
-                    feed_id=row[8],
+                    rss_feed_id=row[8],
                     category_id=row[4],
                     source_id=row[11],
-                    language=row[3],
-                    image_url=row[5],
-                    video_url=row[10],
+                    original_language=row[3],
+                    image_filename=row[5],
+                    video_filename=row[10],
                     created_at=row[6].isoformat() if row[6] else None,
                     updated_at=row[7].isoformat() if row[7] else None,
                     is_published=False,
