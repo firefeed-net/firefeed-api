@@ -8,10 +8,25 @@ for the application.
 import os
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, model_validator
 
 
 class Settings(BaseSettings):
+    @model_validator(mode='after')
+    def validate_secret_key(self) -> 'Settings':
+        """Validate that secret_key is set and is sufficiently strong."""
+        if not self.secret_key:
+            raise ValueError(
+                "FIREFEED_JWT_SECRET_KEY environment variable is required. "
+                "Please set it to a secure random string, e.g.: "
+                "export FIREFEED_JWT_SECRET_KEY=$(openssl rand -hex 32)"
+            )
+        if len(self.secret_key) < 32:
+            raise ValueError(
+                "FIREFEED_JWT_SECRET_KEY must be at least 32 characters (64 hex chars). "
+                "Please generate a new key: export FIREFEED_JWT_SECRET_KEY=$(openssl rand -hex 32)"
+            )
+        return self
     """Application settings"""
 
     # Allow unknown env vars to be present without breaking validation
@@ -40,8 +55,8 @@ class Settings(BaseSettings):
     api_access_log: bool = Field(default=True, env="API_ACCESS_LOG")
 
     # Authentication settings
-    secret_key: str = Field(default="your-secret-key-here", env="SECRET_KEY")
-    algorithm: str = Field(default="HS256", env="ALGORITHM")
+    secret_key: str = Field(default="", env="FIREFEED_JWT_SECRET_KEY")
+    algorithm: str = Field(default="HS256", env="JWT_ALGORITHM")
     access_token_expire_minutes: int = Field(default=30, env="ACCESS_TOKEN_EXPIRE_MINUTES")
 
     # Service settings

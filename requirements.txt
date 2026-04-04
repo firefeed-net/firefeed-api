@@ -1,4 +1,4 @@
-firefeed-core==1.0.1
+firefeed-core==1.0.3
 
 # Core dependencies
 fastapi==0.104.1
