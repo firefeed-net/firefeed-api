@@ -817,6 +817,77 @@ async def create_rss_item(item_data: RSSItemCreate):
         logger.error(f"Error creating RSS item: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+@router.put("/rss/items/{news_id}", response_model=RSSItemResponse)
+async def update_rss_item(news_id: str, item_data: RSSItemCreate):
+    """Update RSS item for internal services."""
+    try:
+        async with await get_db_connection() as conn:
+            async with conn.cursor() as cur:
+                # Check if item exists
+                await cur.execute(
+                    "SELECT news_id FROM rss_data WHERE news_id = %s",
+                    (news_id,)
+                )
+                existing = await cur.fetchone()
+
+                if not existing:
+                    raise HTTPException(status_code=404, detail="RSS item not found")
+
+                # Update item
+                query = """
+                    UPDATE rss_data 
+                    SET original_title = %s,
+                        original_content = %s,
+                        original_language = %s,
+                        category_id = %s,
+                        image_filename = %s,
+                        video_filename = %s,
+                        updated_at = NOW()
+                    WHERE news_id = %s
+                    RETURNING news_id, original_title, original_content, original_language,
+                              category_id, image_filename, created_at, updated_at, rss_feed_id, source_url, video_filename
+                """
+                params = (
+                    item_data.original_title,
+                    item_data.original_content,
+                    item_data.original_language,
+                    item_data.category_id,
+                    item_data.image_filename,
+                    item_data.video_filename,
+                    news_id
+                )
+
+                await cur.execute(query, params)
+                row = await cur.fetchone()
+
+                if not row:
+                    raise HTTPException(status_code=500, detail="Failed to update RSS item")
+
+                return RSSItemResponse(
+                    news_id=row[0],
+                    original_title=row[1],
+                    original_content=row[2],
+                    source_url=row[9] or "",
+                    pub_date=item_data.pub_date,
+                    rss_feed_id=row[8],
+                    category_id=item_data.category_id,
+                    source_id=item_data.source_id,
+                    original_language=item_data.original_language,
+                    image_filename=row[5],
+                    video_filename=row[10],
+                    created_at=row[6].isoformat() if row[6] else None,
+                    updated_at=row[7].isoformat() if row[7] else None,
+                    is_published=False,
+                    published_at=None,
+                    metadata=item_data.metadata
+                )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating RSS item {news_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 @router.get("/rss/items", response_model=RSSItemsListResponse)
 async def get_rss_items(
     original_language: Optional[str] = Query(None),

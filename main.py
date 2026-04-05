@@ -73,20 +73,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     
     # Shutdown
     logger.info("Shutting down FireFeed API...")
-    
+
     try:
         # Cleanup database
         if hasattr(app.state, 'db_service'):
             await app.state.db_service.close()
-        
+
         # Cleanup Redis
         if hasattr(app.state, 'redis_service'):
             app.state.redis_service.close()
-        
+
         logger.info("FireFeed API shutdown completed")
-        
+
     except Exception as e:
         logger.error(f"Error during shutdown: {e}")
+        # Don't re-raise during shutdown to prevent I/O errors
 
 
 def create_app() -> FastAPI:

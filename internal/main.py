@@ -68,13 +68,14 @@ internal_app.add_middleware(
 if settings.secure_cookies:
     internal_app.add_middleware(HTTPSRedirectMiddleware)
 
-internal_app.add_middleware(GZipMiddleware, minimum_size=1000)
-
-# Add custom middleware
+# Add custom middleware (order matters: last added = first executed)
 internal_app.add_middleware(ServiceAuthMiddleware)
 internal_app.add_middleware(InternalLoggingMiddleware)
 internal_app.add_middleware(InternalErrorHandlingMiddleware)
 internal_app.add_middleware(InternalRateLimitingMiddleware)
+
+# GZip should be added last to avoid I/O errors during shutdown
+internal_app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Include routers
 internal_app.include_router(health_router, prefix="/api/v1/internal", tags=["Health"])
@@ -155,7 +156,11 @@ async def startup_event():
 @internal_app.on_event("shutdown")
 async def shutdown_event():
     """Shutdown event handler"""
-    logger.info("Shutting down FireFeed Internal API")
+    try:
+        logger.info("Shutting down FireFeed Internal API")
+    except Exception:
+        # Ignore errors during shutdown
+        pass
 
 if __name__ == "__main__":
     import uvicorn
