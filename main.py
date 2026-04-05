@@ -7,6 +7,7 @@ middleware, routes, and startup/shutdown handlers.
 
 import os
 import logging
+from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -136,41 +137,53 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint - returns basic status without sensitive details."""
     try:
-        # Database health check
-        db_health = await app.state.db_service.health_check()
-        
-        # Redis health check
-        redis_health = app.state.redis_service.health_check()
-        
+        # Check if services are initialized
+        db_status = "unknown"
+        redis_status = "unknown"
+
+        if hasattr(app.state, 'db_service'):
+            db_health = await app.state.db_service.health_check()
+            db_status = "ok" if isinstance(db_health, dict) and db_health.get("status") == "ok" else "error"
+        else:
+            db_status = "not_initialized"
+
+        if hasattr(app.state, 'redis_service'):
+            redis_health = app.state.redis_service.health_check()
+            redis_status = "ok" if isinstance(redis_health, dict) and redis_health.get("status") in ("ok", True) else "error"
+        else:
+            redis_status = "not_initialized"
+
+        overall_status = "healthy"
+        if db_status == "error" or redis_status == "error":
+            overall_status = "degraded"
+
+        # Return simplified status (no detailed connection info)
         return {
-            "status": "healthy",
-            "database": db_health,
-            "redis": redis_health,
-            "timestamp": "2026-01-11T07:36:12.000Z"
+            "status": overall_status,
+            "timestamp": datetime.utcnow().isoformat()
         }
-        
+
     except Exception as e:
         return {
             "status": "unhealthy",
-            "error": str(e),
-            "timestamp": "2026-01-11T07:36:12.000Z"
+            "timestamp": datetime.utcnow().isoformat()
         }
 
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     # Get settings
     settings = get_settings()
-    
+
     # Run application
     uvicorn.run(
         "main:app",
-        host=settings.host,
-        port=settings.port,
-        reload=settings.reload,
+        host=settings.api_host,
+        port=settings.api_port,
+        reload=settings.api_debug,
         log_level=settings.log_level.lower(),
-        access_log=settings.access_log
+        access_log=settings.api_access_log
     )

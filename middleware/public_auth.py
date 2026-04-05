@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from firefeed_core.auth.token_manager import ServiceTokenManager
 from firefeed_core.exceptions import AuthenticationException
+from config.environment import settings
 
 logger = logging.getLogger(__name__)
 
@@ -95,13 +96,13 @@ class PublicAuthDependency:
     async def __call__(self, request: Request) -> Optional[TokenData]:
         """
         Authenticate request and return token data.
-        
+
         Args:
             request: FastAPI request object
-            
+
         Returns:
             TokenData if authentication successful, None if not required and failed
-            
+
         Raises:
             HTTPException: If authentication is required but failed
         """
@@ -115,31 +116,55 @@ class PublicAuthDependency:
                     headers={"WWW-Authenticate": "Bearer"}
                 )
             return None
-        
+
         token = auth_header.split(" ")[1]
-        
+
+        # Determine token type from header or payload and authenticate accordingly
+        # Do NOT silently fall back between user and service token authentication
         try:
-            # Try to authenticate as user token first
-            try:
-                return await self.middleware.authenticate_user_token(token)
-            except AuthenticationException:
-                # If user token authentication fails, try service token
-                try:
-                    return await self.middleware.authenticate_service_token(token)
-                except AuthenticationException:
-                    if self.required:
-                        raise HTTPException(
-                            status_code=status.HTTP_401_UNAUTHORIZED,
-                            detail="Invalid authentication token",
-                            headers={"WWW-Authenticate": "Bearer"}
-                        )
-                    return None
-                    
-        except AuthenticationException as e:
+            # Try user token authentication first
+            payload = self.middleware.token_manager.verify_token(token)
+            user_id = payload.get("sub")
+            service_id = payload.get("service_id")
+
+            if user_id and not service_id:
+                # This is a user token
+                return TokenData(
+                    user_id=int(user_id),
+                    service_id=service_id,
+                    scopes=payload.get("scopes", [])
+                )
+            elif service_id and not user_id:
+                # This is a service token
+                return TokenData(
+                    user_id=None,
+                    service_id=service_id,
+                    scopes=payload.get("scopes", [])
+                )
+            elif user_id and service_id:
+                # Token has both - treat as user token (more restrictive)
+                return TokenData(
+                    user_id=int(user_id),
+                    service_id=service_id,
+                    scopes=payload.get("scopes", [])
+                )
+            else:
+                # Token has neither - invalid
+                if self.required:
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Invalid authentication token: missing user_id and service_id",
+                        headers={"WWW-Authenticate": "Bearer"}
+                    )
+                return None
+
+        except HTTPException:
+            raise
+        except Exception as e:
             if self.required:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=str(e),
+                    detail=f"Invalid authentication token: {str(e)}",
                     headers={"WWW-Authenticate": "Bearer"}
                 )
             return None
@@ -164,13 +189,13 @@ def create_public_auth_dependency(secret_key: str, issuer: str, required: bool =
 
 # Default authentication dependencies
 public_auth_required = create_public_auth_dependency(
-    secret_key="public-api-secret",  # Should be configurable
+    secret_key=settings.secret_key,
     issuer="firefeed-api",
     required=True
 )
 
 public_auth_optional = create_public_auth_dependency(
-    secret_key="public-api-secret",  # Should be configurable
+    secret_key=settings.secret_key,
     issuer="firefeed-api",
     required=False
 )

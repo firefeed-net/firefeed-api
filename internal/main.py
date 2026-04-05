@@ -5,15 +5,17 @@ This module provides the internal API endpoints for microservice communication.
 These endpoints are not intended for external use and require service authentication.
 """
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from datetime import datetime
+from contextlib import asynccontextmanager
+from typing import AsyncGenerator
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.openapi.utils import get_openapi
-from loguru import logger
+import logging
 
-from .auth import verify_service_auth
 from .middleware import (
     ServiceAuthMiddleware,
     InternalLoggingMiddleware,
@@ -36,11 +38,30 @@ from .routers import (
     cache_router
 )
 from .config import get_settings
+from .models import HealthResponse, ServiceInfo
+
+logger = logging.getLogger(__name__)
 
 # Get application settings
 settings = get_settings()
 
-# Create FastAPI app for internal API
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Application lifespan manager using modern pattern."""
+    # Startup
+    logger.info("Starting FireFeed Internal API")
+    logger.info(f"Service: {settings.project_name} v{settings.project_version}")
+    logger.info(f"Environment: {settings.api_environment}")
+    yield
+    # Shutdown
+    try:
+        logger.info("Shutting down FireFeed Internal API")
+    except Exception:
+        pass
+
+
+# Create FastAPI app for internal API - use lifespan instead of deprecated events
 internal_app = FastAPI(
     title="FireFeed Internal API",
     description="Internal API for microservice communication within FireFeed system",
@@ -48,31 +69,43 @@ internal_app = FastAPI(
     docs_url=None,  # Disable docs for internal API
     redoc_url=None,  # Disable redoc for internal API
     openapi_url=None,  # Disable OpenAPI for internal API
-    dependencies=[Depends(verify_service_auth)]  # Require service authentication
+    lifespan=lifespan
 )
 
-# Add middleware
+# Parse allowed origins from settings
+allowed_origins_list = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()] if settings.allowed_origins else []
+
+# Add CORS middleware - require explicit origin configuration for internal API
+if not allowed_origins_list:
+    logger.warning("No allowed origins configured for internal API - using restrictive defaults")
+    # Use localhost only as fallback, never use wildcard for internal API
+    allowed_origins_list = ["http://localhost:3000", "http://localhost:8080"]
+
 internal_app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for internal services
-    allow_credentials=True,
+    allow_origins=allowed_origins_list,
+    allow_credentials=settings.cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-internal_app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=settings.allowed_hosts
-)
+# Add TrustedHostMiddleware with configured hosts (fallback to all if not set)
+allowed_hosts = getattr(settings, 'allowed_hosts', None)
+if allowed_hosts:
+    internal_app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=allowed_hosts
+    )
 
 if settings.secure_cookies:
     internal_app.add_middleware(HTTPSRedirectMiddleware)
 
-# Add custom middleware (order matters: last added = first executed)
-internal_app.add_middleware(ServiceAuthMiddleware)
-internal_app.add_middleware(InternalLoggingMiddleware)
-internal_app.add_middleware(InternalErrorHandlingMiddleware)
-internal_app.add_middleware(InternalRateLimitingMiddleware)
+# Add custom middleware (order matters: last added = first executed).
+# Auth must run before rate limiting to prevent unauthenticated quota consumption.
+internal_app.add_middleware(InternalRateLimitingMiddleware)   # added 1st → runs 4th
+internal_app.add_middleware(InternalErrorHandlingMiddleware)  # added 2nd → runs 3rd
+internal_app.add_middleware(InternalLoggingMiddleware)        # added 3rd → runs 2nd
+internal_app.add_middleware(ServiceAuthMiddleware)            # added 4th → runs 1st (auth first)
 
 # GZip should be added last to avoid I/O errors during shutdown
 internal_app.add_middleware(GZipMiddleware, minimum_size=1000)
@@ -92,7 +125,7 @@ internal_app.include_router(database_router, prefix="/api/v1/internal", tags=["D
 internal_app.include_router(metrics_router, prefix="/api/v1/internal", tags=["Metrics"])
 internal_app.include_router(cache_router, prefix="/api/v1/internal", tags=["Cache"])
 
-# Health check endpoint (no auth required)
+# Health check endpoint (no auth required - defined BEFORE routers to avoid conflicts)
 @internal_app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
     """Health check endpoint for internal services"""
@@ -144,23 +177,6 @@ def custom_openapi():
     return internal_app.openapi_schema
 
 internal_app.openapi = custom_openapi
-
-# Event handlers
-@internal_app.on_event("startup")
-async def startup_event():
-    """Startup event handler"""
-    logger.info("Starting FireFeed Internal API")
-    logger.info(f"Service: {settings.project_name} v{settings.project_version}")
-    logger.info(f"Environment: {settings.environment}")
-
-@internal_app.on_event("shutdown")
-async def shutdown_event():
-    """Shutdown event handler"""
-    try:
-        logger.info("Shutting down FireFeed Internal API")
-    except Exception:
-        # Ignore errors during shutdown
-        pass
 
 if __name__ == "__main__":
     import uvicorn

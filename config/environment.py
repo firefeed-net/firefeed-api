@@ -6,32 +6,19 @@ for the application.
 """
 
 import os
+import warnings
+from pathlib import Path
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, model_validator
 
 
 class Settings(BaseSettings):
-    @model_validator(mode='after')
-    def validate_secret_key(self) -> 'Settings':
-        """Validate that secret_key is set and is sufficiently strong."""
-        if not self.secret_key:
-            raise ValueError(
-                "FIREFEED_JWT_SECRET_KEY environment variable is required. "
-                "Please set it to a secure random string, e.g.: "
-                "export FIREFEED_JWT_SECRET_KEY=$(openssl rand -hex 32)"
-            )
-        if len(self.secret_key) < 32:
-            raise ValueError(
-                "FIREFEED_JWT_SECRET_KEY must be at least 32 characters (64 hex chars). "
-                "Please generate a new key: export FIREFEED_JWT_SECRET_KEY=$(openssl rand -hex 32)"
-            )
-        return self
     """Application settings"""
 
     # Allow unknown env vars to be present without breaking validation
     model_config = SettingsConfigDict(
-        env_file="./firefeed-api/.env",
+        env_file=str(Path(__file__).resolve().parent.parent / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
@@ -43,7 +30,7 @@ class Settings(BaseSettings):
     project_description: str = Field(default="Microservices-based RSS feed management API", env="PROJECT_DESCRIPTION")
 
     # Database settings
-    database_url: str = Field(default="postgresql://postgres:password@localhost:5432/firefeed", env="DATABASE_URL")
+    database_url: str = Field(default="", env="DATABASE_URL")
     redis_url: str = Field(default="redis://localhost:6379/0", env="REDIS_URL")
 
     # API settings (align with docker-compose)
@@ -94,6 +81,44 @@ class Settings(BaseSettings):
     dev_mode: bool = Field(default=True, env="DEV_MODE")
     hot_reload: bool = Field(default=True, env="HOT_RELOAD")
     auto_migrate: bool = Field(default=True, env="AUTO_MIGRATE")
+
+    @model_validator(mode='after')
+    def validate_all(self) -> 'Settings':
+        """Combined validator for secret_key and database_url."""
+        # Validate secret_key
+        if not self.secret_key:
+            raise ValueError(
+                "FIREFEED_JWT_SECRET_KEY environment variable is required. "
+                "Please set it to a secure random string, e.g.: "
+                "export FIREFEED_JWT_SECRET_KEY=$(openssl rand -hex 32)"
+            )
+        if len(self.secret_key) < 32:
+            raise ValueError(
+                "FIREFEED_JWT_SECRET_KEY must be at least 32 characters (64 hex chars). "
+                "Please generate a new key: export FIREFEED_JWT_SECRET_KEY=$(openssl rand -hex 32)"
+            )
+        # Check for common weak patterns
+        if self.secret_key == 'a' * len(self.secret_key) or \
+           self.secret_key == '0' * len(self.secret_key) or \
+           self.secret_key.lower() in ('secretkey', 'mysecretkey', 'supersecret', 'changeme'):
+            raise ValueError(
+                "FIREFEED_JWT_SECRET_KEY appears to be a weak pattern. "
+                "Please generate a secure random key: export FIREFEED_JWT_SECRET_KEY=$(openssl rand -hex 32)"
+            )
+
+        # Validate database_url
+        if not self.database_url and self.api_environment == "production":
+            raise ValueError(
+                "DATABASE_URL environment variable is required in production. "
+                "Please configure a secure database connection string."
+            )
+        # Warn if using default credentials in non-production
+        if self.database_url and "postgres:password" in self.database_url:
+            warnings.warn(
+                "Default database credentials detected. "
+                "Please update DATABASE_URL to use secure credentials."
+            )
+        return self
 
 
 def get_settings() -> Settings:

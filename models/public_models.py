@@ -223,6 +223,8 @@ class TranslationRequest(BaseModel):
 
 class TranslationResponse(BaseModel):
     """Translation response model (backward compatible with monolithic version)."""
+    model_config = {"protected_namespaces": ()}
+
     original_text: str
     translated_text: str
     source_language: str
@@ -343,12 +345,6 @@ class UserCreateRequest(BaseModel):
     password: str = Field(..., min_length=8)
     language: str = "en"
 
-# User Update Request Model - matches monolithic version
-class UserUpdateRequest(BaseModel):
-    """User update request model (backward compatible with monolithic version)."""
-    email: Optional[EmailStr] = None
-    language: Optional[str] = None
-
 # User Response Model - matches monolithic version
 class UserResponse(BaseModel):
     """User response model (backward compatible with monolithic version)."""
@@ -372,28 +368,6 @@ class LoginRequest(BaseModel):
     """Login request model (backward compatible with monolithic version)."""
     email: EmailStr
     password: str
-
-# Password Reset Request Model - matches monolithic version
-class PasswordResetRequest(BaseModel):
-    """Password reset request model (backward compatible with monolithic version)."""
-    email: EmailStr
-
-# Password Reset Confirm Request Model - matches monolithic version
-class PasswordResetConfirmRequest(BaseModel):
-    """Password reset confirm request model (backward compatible with monolithic version)."""
-    token: str
-    new_password: str = Field(..., min_length=8)
-
-# Email Verification Request Model - matches monolithic version
-class EmailVerificationRequest(BaseModel):
-    """Email verification request model (backward compatible with monolithic version)."""
-    email: EmailStr
-    code: str = Field(..., min_length=6, max_length=6, description="6-digit verification code")
-
-# Resend Verification Request Model - matches monolithic version
-class ResendVerificationRequest(BaseModel):
-    """Resend verification request model (backward compatible with monolithic version)."""
-    email: EmailStr
 
 # RSS Item Response Model - matches monolithic version
 class RSSItemResponse(BaseModel):
@@ -477,26 +451,6 @@ class LanguageResponse(BaseModel):
     language: str
     name: str
     is_active: bool
-
-# Translation Request Model - matches monolithic version
-class TranslationRequest(BaseModel):
-    """Translation request model (backward compatible with monolithic version)."""
-    text: str
-    target_language: str
-    source_language: Optional[str] = None
-    model: Optional[str] = None
-    context: Optional[Dict[str, Any]] = None
-
-# Translation Response Model - matches monolithic version
-class TranslationResponse(BaseModel):
-    """Translation response model (backward compatible with monolithic version)."""
-    original_text: str
-    translated_text: str
-    source_language: str
-    target_language: str
-    model_used: Optional[str] = None
-    confidence: Optional[float] = None
-    processing_time: Optional[float] = None
 
 # Media Request Model - matches monolithic version
 class MediaRequest(BaseModel):

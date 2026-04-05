@@ -35,13 +35,11 @@ class TranslationResponse(BaseModel):
     confidence: Optional[float] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = {"protected_namespaces": (), "from_attributes": True}
 
 
 class Translation(TranslationBase):
     id: str
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = {"from_attributes": True}

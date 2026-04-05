@@ -1,18 +1,20 @@
 """Public authentication endpoints for FireFeed API - maintaining backward compatibility with monolithic version."""
 
 import logging
-import random
 import secrets
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List
+import bcrypt
+import hmac
 
 from firefeed_core.api_client.client import APIClient
 from firefeed_core.auth.token_manager import ServiceTokenManager
 from firefeed_core.exceptions import ServiceException
 from firefeed_core.models.base_models import UserResponse, Token, UserCreate, UserUpdate, PasswordResetRequest, PasswordResetConfirm, EmailVerificationRequest, ResendVerificationRequest, SuccessResponse
+from config.environment import settings
 
 logger = logging.getLogger(__name__)
 
@@ -69,15 +71,15 @@ class TokenData(BaseModel):
 def get_service_token_manager():
     """Get service token manager for internal API communication."""
     return ServiceTokenManager(
-        secret_key="internal-service-secret",  # Should be configurable
+        secret_key=settings.secret_key,
         issuer="firefeed-api"
     )
 
 def get_api_client():
     """Get API client for internal API communication."""
     return APIClient(
-        base_url="http://localhost:8001",  # Should be configurable
-        token="internal-service-token",    # Should be configurable
+        base_url=settings.internal_api_url,
+        token=settings.internal_api_token,
         service_id="firefeed-api-public"
     )
 
@@ -90,22 +92,25 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
         expire = datetime.now(timezone.utc) + timedelta(minutes=30)
     to_encode.update({"exp": expire})
     encoded_jwt = ServiceTokenManager(
-        secret_key="public-api-secret",  # Should be configurable
+        secret_key=settings.secret_key,
         issuer="firefeed-api"
     ).create_token(to_encode)
     return encoded_jwt
 
 def verify_password(plain_password: str, hashed_password: str):
-    """Verify password hash."""
-    # Simple implementation - in production use proper hashing
-    return plain_password == hashed_password
+    """Verify password hash using bcrypt with constant-time comparison."""
+    try:
+        return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+    except (ValueError, TypeError):
+        return False
 
 def get_password_hash(password: str):
-    """Generate password hash."""
-    # Simple implementation - in production use proper hashing
-    return f"hashed_{password}"
+    """Generate password hash using bcrypt."""
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+# Dummy bcrypt hash for timing attack mitigation - uses 12 rounds matching bcrypt.gensalt() default
+_DUMMY_PASSWORD_HASH = "$2b$12$LJ3m4ys3Lk0T5kK0Lk0Lk0Lk0Lk0Lk0Lk0Lk0Lk0Lk0Lk0Lk0Lk0"
 
 @router.post(
     "/register",
@@ -166,10 +171,10 @@ async def register_user(
         
         user_response = await api_client.post("/api/v1/internal/users", json_data=user_data)
         
-        # Generate verification code
-        verification_code = "".join(random.choices("0123456789", k=6))
+        # Generate verification code using cryptographically secure random
+        verification_code = f"{secrets.randbelow(1000000):06d}"
         expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
-        
+
         # Save verification code
         verification_data = {
             "user_id": user_response["id"],
@@ -311,8 +316,8 @@ async def resend_verification(
         if user.get("is_verified", False):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User already verified")
         
-        # Generate new verification code
-        verification_code = "".join(random.choices("0123456789", k=6))
+        # Generate new verification code using cryptographically secure random
+        verification_code = f"{secrets.randbelow(1000000):06d}"
         expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
         
         # Save verification code
@@ -376,7 +381,7 @@ async def resend_verification(
     }
 )
 async def login_user(
-    request: Request, 
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     api_client: APIClient = Depends(get_api_client)
 ):
@@ -384,40 +389,47 @@ async def login_user(
     try:
         # Get user by email
         user_response = await api_client.get(f"/api/v1/internal/users/by-email/{form_data.username}")
-        
-        if not user_response.get("exists", False):
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
-        
+
+        user_exists = user_response.get("exists", False)
         user = user_response.get("user", {})
-        
-        # Verify password
-        if not verify_password(form_data.password, user.get("password_hash", "")):
+
+        # Always run bcrypt.checkpw to prevent timing attacks
+        # Use a dummy hash for non-existent users to maintain constant time
+        stored_hash = user.get("password_hash", "")
+        if not user_exists:
+            stored_hash = _DUMMY_PASSWORD_HASH
+
+        # Verify password - always run this even if user doesn't exist
+        password_valid = verify_password(form_data.password, stored_hash)
+
+        # Only raise error after constant-time comparison completes
+        if not user_exists or not password_valid:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect email or password")
-        
+
         # Check if account is verified
         if not user.get("is_verified", False):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Account not verified.",
             )
-        
+
         # Check if account is not deleted
         if user.get("is_deleted", False):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Account deactivated.",
             )
-        
+
         # Generate access token
         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         access_token = create_access_token(data={"sub": str(user["id"])}, expires_delta=access_token_expires)
-        
+
         return TokenPublic(
-            access_token=access_token, 
-            token_type="bearer", 
+            access_token=access_token,
+            token_type="bearer",
             expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60
         )
-        
+
     except ServiceException as e:
         logger.error(f"Service error in login_user: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Service error")

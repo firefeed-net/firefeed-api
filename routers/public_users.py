@@ -9,6 +9,7 @@ from firefeed_core.api_client.client import APIClient
 from firefeed_core.auth.token_manager import ServiceTokenManager
 from firefeed_core.exceptions import ServiceException
 from firefeed_core.models.base_models import UserResponse, UserUpdate, SuccessResponse, PaginatedResponse, RSSItem, CategoryItem, SourceItem, LanguageItem
+from config.environment import settings
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ async def get_current_user(request: Request, api_client: APIClient = Depends()):
     try:
         # Verify token
         token_manager = ServiceTokenManager(
-            secret_key="public-api-secret",  # Should be configurable
+            secret_key=settings.secret_key,
             issuer="firefeed-api"
         )
         payload = token_manager.verify_token(token)

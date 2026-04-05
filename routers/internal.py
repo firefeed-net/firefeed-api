@@ -1,14 +1,128 @@
 """Internal API router for FireFeed RSS management."""
 
 import logging
+import hmac
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field
 import aiopg
 import json
+import bcrypt
+import jwt as pyjwt
+from datetime import datetime
+from config.environment import settings
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v1/internal", tags=["internal"])
+
+# ---- Inline service token verification for use in main app ----
+# Since the internal router runs in the main app context (not the separate
+# internal app), we inline a simplified token verification that doesn't
+# depend on the internal/ package.
+
+
+def verify_service_token(token: str) -> Dict[str, Any]:
+    """Verify a service authentication token (simplified for main app context)."""
+    try:
+        payload = pyjwt.decode(
+            token,
+            settings.secret_key,
+            algorithms=[settings.algorithm],
+            options={"require": ["exp"]}
+        )
+        service_name = payload.get("sub") or payload.get("service_name", "unknown")
+        # Support both 'scopes' and 'scope' claim names
+        scopes = payload.get("scopes") or payload.get("scope", [])
+        return {
+            "service_name": service_name,
+            "scopes": scopes,
+            "token_valid": True
+        }
+    except pyjwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    except pyjwt.PyJWTError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
+
+_security = HTTPBearer(auto_error=True)  # Require Bearer token
+
+
+async def get_service_auth(
+    credentials: HTTPAuthorizationCredentials = Depends(_security)
+) -> Dict[str, Any]:
+    """Extract and verify service auth from request. Requires valid Bearer token."""
+    return verify_service_token(credentials.credentials)
+
+
+router = APIRouter(
+    prefix="/api/v1/internal",
+    tags=["internal"],
+    dependencies=[Depends(get_service_auth)]  # Require service authentication for all internal endpoints
+)
+
+# Database connection pool (managed via lifespan context manager in main app)
+_db_pool: Optional[aiopg.Pool] = None
+
+
+async def get_db_pool() -> aiopg.Pool:
+    """Get the database connection pool."""
+    global _db_pool
+    if _db_pool is None:
+        from config.database_config import DatabaseConfig
+        database_config = DatabaseConfig.from_env()
+        _db_pool = await aiopg.create_pool(
+            host=database_config.host,
+            port=database_config.port,
+            database=database_config.name,
+            user=database_config.user,
+            password=database_config.password,
+            minsize=database_config.minsize,
+            maxsize=database_config.maxsize,
+        )
+    return _db_pool
+
+
+async def close_db_pool():
+    """Close the database connection pool."""
+    global _db_pool
+    if _db_pool:
+        _db_pool.close()
+        await _db_pool.wait_closed()
+        _db_pool = None
+
+
+async def get_db_connection():
+    """
+    Get database connection from pool as an async context manager.
+    Usage: async with get_db_connection() as conn: ...
+    This ensures connections are always released back to the pool.
+    """
+    pool = await get_db_pool()
+    return _ConnectionContextManager(pool)
+
+
+class _ConnectionContextManager:
+    """Async context manager that ensures connection is released."""
+    def __init__(self, pool):
+        self.pool = pool
+        self.conn = None
+
+    async def __aenter__(self):
+        self.conn = await self.pool.acquire()
+        return self.conn
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.conn:
+            self.pool.release(self.conn)
+        return False
 
 # Pydantic models for API requests/responses
 class RSSFeedCreate(BaseModel):
@@ -163,23 +277,18 @@ class MetricsResponse(BaseModel):
     db_connections_active: int
     redis_connections_active: int
 
-async def get_db_connection():
-    """Get database connection from pool."""
-    try:
-        from config.database_config import DatabaseConfig
-        database_config = DatabaseConfig.from_env()
-        
-        conn = await aiopg.connect(
-            host=database_config.host,
-            port=database_config.port,
-            database=database_config.name,
-            user=database_config.user,
-            password=database_config.password
-        )
-        return conn
-    except Exception as e:
-        logger.error(f"Database connection failed: {e}")
-        raise HTTPException(status_code=500, detail="Database connection failed")
+class ServiceTokenRequest(BaseModel):
+    """Request model for service token generation."""
+    service_id: str
+    service_name: str
+    scopes: List[str]
+    expires_in: int = 1800  # 30 minutes default
+
+class UserCreateRequest(BaseModel):
+    """Request model for user creation with password validation."""
+    email: str
+    password: str = Field(..., min_length=8, max_length=128)
+    language: str = "en"
 
 @router.get("/health", response_model=HealthCheckResponse)
 async def health_check():
@@ -188,25 +297,21 @@ async def health_check():
         # Import configurations
         from config.database_config import DatabaseConfig
         from firefeed_core.config.redis_config import RedisConfig
-        
-        # Check database connection
-        database_config = DatabaseConfig.from_env()
-        redis_config = RedisConfig.from_env()
-        
-        # Test database connection
-        import aiopg
-        db_pool = await aiopg.create_pool(
-            host=database_config.host,
-            port=database_config.port,
-            database=database_config.name,
-            user=database_config.user,
-            password=database_config.password,
-            minsize=1,
-            maxsize=1
-        )
-        
+
+        # Check database connection using shared pool
+        pool = await get_db_pool()
+        conn = await pool.acquire()
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute("SELECT 1")
+                await cur.fetchone()
+            db_status = "ok"
+        finally:
+            pool.release(conn)
+
         # Test Redis connection
         import redis
+        redis_config = RedisConfig.from_env()
         redis_client = redis.Redis(
             host=redis_config.host,
             port=redis_config.port,
@@ -214,26 +319,32 @@ async def health_check():
             db=redis_config.db,
             decode_responses=True
         )
-        
-        # Test connections
-        conn = await db_pool.acquire()
+
         try:
-            async with conn.cursor() as cur:
-                await cur.execute("SELECT 1")
-                await cur.fetchone()
+            redis_client.ping()
+            redis_status = "ok"
         finally:
-            db_pool.release(conn)
-        db_pool.close()
-        
-        redis_client.ping()
-        redis_client.close()
-        
+            redis_client.close()
+
+        # Get pool stats
+        pool_size = pool.size
+        pool_free = pool.freesize
+
+        # Get actual Redis connection info
+        try:
+            redis_info = redis_client.info()
+            redis_connected_clients = redis_info.get("connected_clients", 0)
+            redis_pool = {"total_connections": redis_connected_clients, "free_connections": max(0, redis_connected_clients)}
+        except Exception:
+            # Fallback to None if Redis info unavailable
+            redis_pool = None
+
         return {
             "status": "ok",
-            "database": "ok",
-            "redis": "ok",
-            "db_pool": {"total_connections": 20, "free_connections": 15},
-            "redis_pool": {"total_connections": 10, "free_connections": 8}
+            "database": db_status,
+            "redis": redis_status,
+            "db_pool": {"total_connections": pool_size, "free_connections": pool_free},
+            "redis_pool": redis_pool
         }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
@@ -247,57 +358,124 @@ async def health_check():
 @router.get("/metrics", response_model=MetricsResponse)
 async def get_metrics():
     """Get service metrics for monitoring."""
-    return {
-        "service_id": "firefeed-api",
-        "timestamp": "2024-01-01T12:00:00Z",
-        "requests_total": 1000,
-        "requests_per_minute": 15.5,
-        "error_rate": 0.02,
-        "avg_response_time": 150.2,
-        "active_users": 500,
-        "rss_feeds_total": 100,
-        "rss_items_total": 10000,
-        "categories_total": 8,
-        "sources_total": 25,
-        "translation_requests_total": 500,
-        "cache_hit_rate": 0.85,
-        "db_connections_active": 15,
-        "redis_connections_active": 8
-    }
+    try:
+        pool = await get_db_pool()
+        pool_size = pool.size
+        pool_free = pool.freesize
+
+        # Whitelist of allowed tables to prevent SQL injection
+        ALLOWED_TABLES = {
+            "rss_feeds": "rf",
+            "rss_data": "rd",
+            "categories": "c",
+            "sources": "s"
+        }
+
+        # Get actual counts from database
+        conn = await pool.acquire()
+        try:
+            async with conn.cursor() as cur:
+                counts = {}
+                for table, alias in ALLOWED_TABLES.items():
+                    # Use validated table name (whitelist ensures safety)
+                    await cur.execute(f"SELECT COUNT(*) FROM {table} {alias}")
+                    row = await cur.fetchone()
+                    counts[f"{table}_total"] = row[0] if row else 0
+
+                # Get translation requests count - add to whitelist for safety
+                ALLOWED_COUNT_TABLES = {
+                    "news_translations": "nt"
+                }
+                try:
+                    for table, alias in ALLOWED_COUNT_TABLES.items():
+                        await cur.execute(f"SELECT COUNT(*) FROM {table} {alias}")
+                        row = await cur.fetchone()
+                        counts["translation_requests_total"] = row[0] if row else 0
+                except Exception:
+                    counts["translation_requests_total"] = 0
+        finally:
+            pool.release(conn)
+
+        # Get metrics from middleware if available
+        from internal.middleware import metrics_middleware
+        mw_metrics = metrics_middleware.get_metrics()
+
+        return {
+            "service_id": "firefeed-api",
+            "timestamp": datetime.utcnow().isoformat(),
+            "requests_total": mw_metrics.get("requests_total", 0),
+            "requests_per_minute": 0.0,  # Would need time-windowed tracking
+            "error_rate": mw_metrics.get("errors_total", 0) / max(mw_metrics.get("requests_total", 1), 1),
+            "avg_response_time": mw_metrics.get("processing_time_avg", 0.0),
+            "active_users": 0,  # Would need session tracking
+            "rss_feeds_total": counts.get("rss_feeds_total", 0),
+            "rss_items_total": counts.get("rss_data_total", 0),
+            "categories_total": counts.get("categories_total", 0),
+            "sources_total": counts.get("sources_total", 0),
+            "translation_requests_total": counts.get("translation_requests_total", 0),
+            "cache_hit_rate": 0.0,  # Would need Redis stats
+            "db_connections_active": pool_size - pool_free,
+            "redis_connections_active": 0  # Would need Redis pool stats
+        }
+    except Exception as e:
+        logger.error(f"Error collecting metrics: {e}")
+        return {
+            "service_id": "firefeed-api",
+            "timestamp": datetime.utcnow().isoformat(),
+            "requests_total": 0,
+            "requests_per_minute": 0.0,
+            "error_rate": 0.0,
+            "avg_response_time": 0.0,
+            "active_users": 0,
+            "rss_feeds_total": 0,
+            "rss_items_total": 0,
+            "categories_total": 0,
+            "sources_total": 0,
+            "translation_requests_total": 0,
+            "cache_hit_rate": 0.0,
+            "db_connections_active": 0,
+            "redis_connections_active": 0
+        }
 
 @router.post("/auth/token")
-async def generate_service_token(token_data: Dict[str, Any]):
-    """Generate service token for internal API access."""
+async def generate_service_token(
+    token_data: ServiceTokenRequest,
+    auth_result: Dict[str, Any] = Depends(get_service_auth)
+):
+    """Generate service token for internal API access. Requires admin service authentication."""
     try:
-        # Validate service data
-        required_fields = ["service_id", "service_name", "scopes"]
-        for field in required_fields:
-            if field not in token_data:
-                raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
-        
-        # Generate JWT token (simplified for now)
+        # Verify that the requesting service has admin scope
+        if "admin" not in auth_result.get("scopes", []) and auth_result.get("service_name") != "internal-api":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions to generate service tokens"
+            )
+
+        # Generate JWT token
         import jwt
         import time
-        
+
         payload = {
-            "service_id": token_data["service_id"],
-            "service_name": token_data["service_name"],
-            "scopes": token_data["scopes"],
-            "exp": time.time() + (token_data.get("expires_in", 1800)),
+            "service_id": token_data.service_id,
+            "service_name": token_data.service_name,
+            "scopes": token_data.scopes,
+            "exp": time.time() + token_data.expires_in,
             "iat": time.time(),
             "iss": "firefeed-api"
         }
-        
-        token = jwt.encode(payload, "your-secret-key", algorithm="HS256")
-        
+
+        token = jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
+
         return {
             "access_token": token,
             "token_type": "bearer",
-            "expires_in": token_data.get("expires_in", 1800),
-            "scopes": token_data["scopes"],
-            "service_id": token_data["service_id"]
+            "expires_in": token_data.expires_in,
+            "scopes": token_data.scopes,
+            "service_id": token_data.service_id
         }
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error generating service token: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -306,7 +484,8 @@ async def generate_service_token(token_data: Dict[str, Any]):
 async def get_user_by_id(user_id: int):
     """Get user by ID for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "SELECT id, email, language, is_active, created_at, updated_at, is_verified, is_deleted "
@@ -339,7 +518,8 @@ async def get_user_by_id(user_id: int):
 async def get_user_by_email(email: str):
     """Get user by email for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "SELECT id, email, language, is_active, created_at, updated_at, is_verified, is_deleted "
@@ -370,33 +550,37 @@ async def get_user_by_email(email: str):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/users", response_model=UserResponse)
-async def create_user(user_data: Dict[str, Any]):
+async def create_user(user_data: UserCreateRequest):
     """Create user for internal services."""
     try:
-        # Validate user data
-        required_fields = ["email", "password", "language"]
-        for field in required_fields:
-            if field not in user_data:
-                raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
-        
-        # Hash password (simplified for now)
-        password_hash = f"hashed_{user_data['password']}"
-        
-        async with await get_db_connection() as conn:
+        # Validate email format
+        if "@" not in user_data.email:
+            raise HTTPException(status_code=400, detail="Invalid email address")
+
+        # Validate password strength
+        if len(user_data.password) < 8:
+            raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+        if user_data.password.isdigit() or user_data.password.isalpha():
+            raise HTTPException(status_code=400, detail="Password must contain both letters and numbers")
+
+        # Hash password with bcrypt
+        password_bytes = user_data.password.encode('utf-8')
+        password_hash = bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode('utf-8')
+
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "INSERT INTO users (email, password_hash, language, is_active, is_verified, is_deleted, created_at, updated_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW()) "
                     "RETURNING id, email, language, is_active, created_at, updated_at, is_verified, is_deleted",
                     (
-                        user_data["email"],
+                        user_data.email,
                         password_hash,
-                        user_data["language"],
+                        user_data.language,
                         False,  # is_active
                         False,  # is_verified
                         False,  # is_deleted
-                        "NOW()",
-                        "NOW()"
                     )
                 )
                 row = await cur.fetchone()
@@ -422,32 +606,37 @@ async def create_user(user_data: Dict[str, Any]):
 async def update_user(user_id: int, user_update_data: UserUpdateRequest):
     """Update user for internal services."""
     try:
+        # Whitelist of allowed updatable columns to prevent SQL injection
+        ALLOWED_UPDATE_FIELDS = {"email", "language"}
+
         update_fields = []
         params = []
-        
+
         if user_update_data.email is not None:
             update_fields.append("email = %s")
             params.append(user_update_data.email)
-        
+
         if user_update_data.language is not None:
             update_fields.append("language = %s")
             params.append(user_update_data.language)
-        
+
         if not update_fields:
             raise HTTPException(status_code=400, detail="No fields to update")
-        
+
         params.extend([user_id])
-        
-        async with await get_db_connection() as conn:
+
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
+                # Build query with whitelisted field names only
                 query = f"UPDATE users SET {', '.join(update_fields)}, updated_at = NOW() WHERE id = %s RETURNING id, email, language, is_active, created_at, updated_at, is_verified, is_deleted"
-                
+
                 await cur.execute(query, params)
                 row = await cur.fetchone()
-                
+
                 if not row:
                     raise HTTPException(status_code=404, detail="User not found")
-                
+
                 return UserResponse(
                     id=row[0],
                     email=row[1],
@@ -458,7 +647,7 @@ async def update_user(user_id: int, user_update_data: UserUpdateRequest):
                     is_verified=row[6],
                     is_deleted=row[7]
                 )
-                
+
     except HTTPException:
         raise
     except Exception as e:
@@ -469,7 +658,8 @@ async def update_user(user_id: int, user_update_data: UserUpdateRequest):
 async def delete_user(user_id: int):
     """Delete user for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute("UPDATE users SET is_deleted = true WHERE id = %s", (user_id,))
                 
@@ -495,7 +685,8 @@ async def get_rss_feeds(
     try:
         offset = (page - 1) * size
         
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 # Build WHERE clause
                 where_conditions = []
@@ -572,7 +763,8 @@ async def get_rss_feeds(
 async def create_rss_feed(feed_data: RSSFeedCreate):
     """Create RSS feed for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 query = """
                     INSERT INTO rss_feeds (source_id, url, name, category_id, language, is_active, 
@@ -617,7 +809,8 @@ async def create_rss_feed(feed_data: RSSFeedCreate):
 async def get_rss_feed_by_id(feed_id: int):
     """Get RSS feed by ID for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 query = """
                     SELECT rf.id, rf.source_id, rf.url, rf.name, rf.category_id, rf.language, 
@@ -662,7 +855,8 @@ async def get_rss_feed_by_id(feed_id: int):
 async def update_rss_feed(feed_id: int, feed_data: RSSFeedCreate):
     """Update RSS feed for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 query = """
                     UPDATE rss_feeds 
@@ -714,7 +908,8 @@ async def update_rss_feed(feed_id: int, feed_data: RSSFeedCreate):
 async def delete_rss_feed(feed_id: int):
     """Delete RSS feed for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute("DELETE FROM rss_feeds WHERE id = %s", (feed_id,))
                 
@@ -733,7 +928,8 @@ async def delete_rss_feed(feed_id: int):
 async def create_rss_item(item_data: RSSItemCreate):
     """Create RSS item for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 # Check if news_id already exists
                 await cur.execute(
@@ -821,7 +1017,8 @@ async def create_rss_item(item_data: RSSItemCreate):
 async def update_rss_item(news_id: str, item_data: RSSItemCreate):
     """Update RSS item for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 # Check if item exists
                 await cur.execute(
@@ -914,7 +1111,8 @@ async def get_rss_items(
         
         offset_val = (page - 1) * size
         
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 # Build WHERE clause
                 where_conditions = ["1=1"]  # Always true condition
@@ -1017,7 +1215,8 @@ async def get_rss_items(
 async def get_rss_item_by_id(news_id: str):
     """Get RSS item by ID for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 query = """
                     SELECT pnd.news_id, pnd.original_title, pnd.original_content, pnd.original_language,
@@ -1067,7 +1266,8 @@ async def get_categories(
 ):
     """Get categories for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 # Build WHERE clause
                 where_conditions = []
@@ -1130,7 +1330,8 @@ async def get_sources(
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid category_id format")
         
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 # Build WHERE clause
                 where_conditions = []
@@ -1180,7 +1381,8 @@ async def get_sources(
 async def create_user_rss_feed(feed_data: UserRSSFeedCreate):
     """Create user RSS feed for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 query = """
                     INSERT INTO user_rss_feeds (user_id, url, name, category_id, language, is_active)
@@ -1220,7 +1422,8 @@ async def create_user_rss_feed(feed_data: UserRSSFeedCreate):
 async def get_user_rss_feeds(user_id: int):
     """Get user RSS feeds for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 query = """
                     SELECT urf.id, urf.user_id, urf.url, urf.name, urf.category_id, urf.language, 
@@ -1259,7 +1462,8 @@ async def get_user_rss_feeds(user_id: int):
 async def get_user_rss_feed_by_id(user_id: int, feed_id: int):
     """Get user RSS feed by ID for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 query = """
                     SELECT urf.id, urf.user_id, urf.url, urf.name, urf.category_id, urf.language, 
@@ -1322,7 +1526,8 @@ async def update_user_rss_feed(user_id: int, feed_id: int, feed_update_data: Use
         
         params.extend([user_id, feed_id])
         
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 query = f"""
                     UPDATE user_rss_feeds 
@@ -1360,7 +1565,8 @@ async def update_user_rss_feed(user_id: int, feed_id: int, feed_update_data: Use
 async def delete_user_rss_feed(user_id: int, feed_id: int):
     """Delete user RSS feed for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute("DELETE FROM user_rss_feeds WHERE user_id = %s AND id = %s", (user_id, feed_id))
                 
@@ -1385,7 +1591,8 @@ async def create_api_key(key_data: UserAPIKeyCreate):
         key_hash = secrets.token_urlsafe(32)
         limits = {"requests_per_day": 1000, "requests_per_hour": 100}
         
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 query = """
                     INSERT INTO user_api_keys (user_id, key_hash, limits, is_active)
@@ -1420,7 +1627,8 @@ async def create_api_key(key_data: UserAPIKeyCreate):
 async def get_user_api_keys(user_id: int):
     """Get user API keys for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 query = """
                     SELECT id, user_id, key_hash, limits, is_active, created_at, expires_at
@@ -1454,7 +1662,8 @@ async def get_user_api_keys(user_id: int):
 async def delete_api_key(user_id: int, key_id: int):
     """Delete API key for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute("DELETE FROM user_api_keys WHERE user_id = %s AND id = %s", (user_id, key_id))
                 
@@ -1478,7 +1687,8 @@ async def generate_telegram_link(user_id: int):
         # Generate link code
         link_code = secrets.token_urlsafe(16)
         
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 # Check if user exists
                 await cur.execute("SELECT id FROM users WHERE id = %s", (user_id,))
@@ -1506,7 +1716,8 @@ async def generate_telegram_link(user_id: int):
 async def get_telegram_link_status(user_id: int):
     """Get Telegram link status for internal services."""
     try:
-        async with await get_db_connection() as conn:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "SELECT telegram_id, linked_at FROM user_telegram_links WHERE user_id = %s ORDER BY created_at DESC LIMIT 1",

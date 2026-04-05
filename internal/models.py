@@ -117,6 +117,8 @@ class TranslationRequest(BaseModel):
 
 class TranslationResponse(BaseModel):
     """Translation response model"""
+    model_config = {"protected_namespaces": ()}
+
     original_text: str = Field(..., description="Original text")
     translated_text: str = Field(..., description="Translated text")
     source_language: str = Field(..., description="Source language")

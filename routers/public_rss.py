@@ -9,6 +9,7 @@ from firefeed_core.api_client.client import APIClient
 from firefeed_core.auth.token_manager import ServiceTokenManager
 from firefeed_core.exceptions import ServiceException
 from firefeed_core.models.base_models import RSSItem, CategoryItem, SourceItem, LanguageItem, PaginatedResponse
+from config.environment import settings
 
 logger = logging.getLogger(__name__)
 
@@ -26,37 +27,53 @@ class HTTPError(BaseModel):
     """Error response model for public API."""
     detail: str
 
+# Helper functions (must be defined before usage in Depends)
+def get_service_token_manager():
+    """Get service token manager for internal API communication."""
+    return ServiceTokenManager(
+        secret_key=settings.secret_key,
+        issuer="firefeed-api"
+    )
+
+def get_api_client():
+    """Get API client for internal API communication."""
+    return APIClient(
+        base_url=settings.internal_api_url,
+        token=settings.internal_api_token,
+        service_id="firefeed-api-public"
+    )
+
 # Authentication dependency for public API
-async def get_current_user(request: Request, api_client: APIClient = Depends()):
+async def get_current_user(request: Request, api_client: APIClient = Depends(get_api_client)):
     """Get current authenticated user from JWT token."""
     # Extract token from Authorization header
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    
+
     token = auth_header.split(" ")[1]
-    
+
     try:
         # Verify token
         token_manager = ServiceTokenManager(
-            secret_key="public-api-secret",  # Should be configurable
+            secret_key=settings.secret_key,
             issuer="firefeed-api"
         )
         payload = token_manager.verify_token(token)
-        
+
         user_id = payload.get("sub")
         if not user_id:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-        
+
         # Get user from internal API
         user_response = await api_client.get(f"/api/v1/internal/users/{user_id}")
         return user_response
-        
+
     except Exception as e:
         logger.error(f"Authentication error: {e}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
 
-async def get_current_user_optional(request: Request, api_client: APIClient = Depends()):
+async def get_current_user_optional(request: Request, api_client: APIClient = Depends(get_api_client)):
     """Get current authenticated user from JWT token (optional)."""
     try:
         return await get_current_user(request, api_client)
@@ -113,7 +130,7 @@ async def get_rss_items(
     limit: Optional[int] = Query(50, le=100, gt=0),
     offset: Optional[int] = Query(0, ge=0),
     current_user: Optional[dict] = Depends(get_current_user_optional),
-    api_client: APIClient = Depends()
+    api_client: APIClient = Depends(get_api_client)
 ):
     """Get RSS items with filtering and pagination (backward compatible with monolithic version)."""
     try:
@@ -210,7 +227,7 @@ async def get_rss_item_by_id(
     request: Request,
     rss_item_id: str,
     current_user: Optional[dict] = Depends(get_current_user_optional),
-    api_client: APIClient = Depends()
+    api_client: APIClient = Depends(get_api_client)
 ):
     """Get specific RSS item by ID (backward compatible with monolithic version)."""
     try:
@@ -260,7 +277,7 @@ async def get_categories(
     offset: Optional[int] = Query(0, ge=0),
     source_ids: Optional[List[str]] = Query(None),
     current_user: Optional[dict] = Depends(get_current_user_optional),
-    api_client: APIClient = Depends()
+    api_client: APIClient = Depends(get_api_client)
 ):
     """Get available news categories (backward compatible with monolithic version)."""
     try:
@@ -335,7 +352,7 @@ async def get_sources(
     offset: Optional[int] = Query(0, ge=0),
     category_id: Optional[List[str]] = Query(None),
     current_user: Optional[dict] = Depends(get_current_user_optional),
-    api_client: APIClient = Depends()
+    api_client: APIClient = Depends(get_api_client)
 ):
     """Get available news sources (backward compatible with monolithic version)."""
     try:
@@ -408,7 +425,7 @@ async def get_sources(
 async def get_languages(
     request: Request,
     current_user: Optional[dict] = Depends(get_current_user_optional),
-    api_client: APIClient = Depends()
+    api_client: APIClient = Depends(get_api_client)
 ):
     """Get supported languages (backward compatible with monolithic version)."""
     try:
@@ -482,7 +499,7 @@ async def get_languages(
 async def health_check(
     request: Request,
     current_user: Optional[dict] = Depends(get_current_user_optional),
-    api_client: APIClient = Depends()
+    api_client: APIClient = Depends(get_api_client)
 ):
     """Health check endpoint (backward compatible with monolithic version)."""
     try:
@@ -538,7 +555,7 @@ async def get_rss_feeds(
     is_active: Optional[bool] = Query(None),
     category_id: Optional[int] = Query(None),
     current_user: Optional[dict] = Depends(get_current_user_optional),
-    api_client: APIClient = Depends()
+    api_client: APIClient = Depends(get_api_client)
 ):
     """Get RSS feeds (backward compatible with monolithic version)."""
     try:
@@ -597,7 +614,7 @@ async def get_rss_feed_by_id(
     request: Request,
     feed_id: int,
     current_user: Optional[dict] = Depends(get_current_user_optional),
-    api_client: APIClient = Depends()
+    api_client: APIClient = Depends(get_api_client)
 ):
     """Get RSS feed by ID (backward compatible with monolithic version)."""
     try:
@@ -659,7 +676,7 @@ async def translate_text(
     request: Request,
     translation_data: dict,
     current_user: Optional[dict] = Depends(get_current_user_optional),
-    api_client: APIClient = Depends()
+    api_client: APIClient = Depends(get_api_client)
 ):
     """Translate text (backward compatible with monolithic version)."""
     try:

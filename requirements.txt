@@ -1,4 +1,4 @@
-firefeed-core==1.0.4
+firefeed-core==1.0.5
 
 # Core dependencies
 fastapi==0.104.1
@@ -12,9 +12,8 @@ aiopg==1.4.0
 sqlalchemy==2.0.23
 alembic==1.13.1
 
-# Redis
+# Redis (redis>=4.0 includes async support, aioredis is merged into it)
 redis==5.0.1
-aioredis==2.0.1
 
 # Authentication and Security
 python-jose[cryptography]==3.3.0

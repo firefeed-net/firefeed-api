@@ -39,15 +39,19 @@ class RedisConfig(BaseRedisConfig):
             }
         }
 
+        # Use hasattr for safe attribute access on base config
+        def get_base_attr(name: str, default: int) -> int:
+            return getattr(base_config, name, default)
+
         return cls(
             **base_kwargs,
             # API-specific settings (override if provided via env, fallback to base values or defaults)
-            cache_ttl=int(os.getenv('API_CACHE_TTL', str(getattr(base_config, 'cache_ttl', 3600)))),
-            session_ttl=int(os.getenv('API_SESSION_TTL', str(getattr(base_config, 'session_ttl', 86400)))),
-            rate_limit_ttl=int(os.getenv('API_RATE_LIMIT_TTL', str(getattr(base_config, 'rate_limit_ttl', 3600)))),
-            cache_prefix=os.getenv('API_CACHE_PREFIX', getattr(base_config, 'cache_prefix', 'api:cache')),
-            session_prefix=os.getenv('API_SESSION_PREFIX', getattr(base_config, 'session_prefix', 'api:session')),
-            rate_limit_prefix=os.getenv('API_RATE_LIMIT_PREFIX', getattr(base_config, 'rate_limit_prefix', 'api:rate_limit')),
+            cache_ttl=int(os.getenv('API_CACHE_TTL', str(get_base_attr('cache_ttl', 3600)))),
+            session_ttl=int(os.getenv('API_SESSION_TTL', str(get_base_attr('session_ttl', 86400)))),
+            rate_limit_ttl=int(os.getenv('API_RATE_LIMIT_TTL', str(get_base_attr('rate_limit_ttl', 3600)))),
+            cache_prefix=os.getenv('API_CACHE_PREFIX', get_base_attr('cache_prefix', 'api:cache') if hasattr(base_config, 'cache_prefix') else 'api:cache'),
+            session_prefix=os.getenv('API_SESSION_PREFIX', get_base_attr('session_prefix', 'api:session') if hasattr(base_config, 'session_prefix') else 'api:session'),
+            rate_limit_prefix=os.getenv('API_RATE_LIMIT_PREFIX', get_base_attr('rate_limit_prefix', 'api:rate_limit') if hasattr(base_config, 'rate_limit_prefix') else 'api:rate_limit'),
         )
     
     def get_cache_config(self) -> Dict[str, Any]:

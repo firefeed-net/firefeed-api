@@ -125,15 +125,34 @@ class RSSItemRepository(IRSSItemRepository):
 
     async def update_rss_item(self, news_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Update RSS item."""
+        # Whitelist of allowed updatable columns to prevent SQL injection
+        ALLOWED_COLUMNS = {
+            "original_title", "original_content", "original_language",
+            "category_id", "image_filename", "rss_feed_id", "source_url",
+            "video_filename", "embedding"
+        }
+
         set_parts = []
         values = []
         for key, value in update_data.items():
+            if key not in ALLOWED_COLUMNS:
+                logger.warning(f"Attempted to update disallowed column: {key}")
+                continue
+            # Validate column name is a valid identifier
+            if not key.isidentifier():
+                logger.warning(f"Invalid column name rejected: {key}")
+                continue
             set_parts.append(f"{key} = %s")
             values.append(value)
-        
+
+        if not set_parts:
+            logger.warning(f"No valid columns to update for item {news_id}")
+            return None
+
+        # Build query with validated, whitelisted column names only
         query = f"UPDATE rss_data SET {', '.join(set_parts)}, updated_at = NOW() WHERE news_id = %s RETURNING news_id, original_title, original_content, original_language, category_id, image_filename, updated_at, rss_feed_id, source_url, video_filename"
         values.append(news_id)
-        
+
         async with self.db_pool.acquire() as conn:
             async with conn.cursor() as cur:
                 try:
