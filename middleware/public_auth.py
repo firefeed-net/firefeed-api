@@ -189,13 +189,13 @@ def create_public_auth_dependency(secret_key: str, issuer: str, required: bool =
 
 # Default authentication dependencies
 public_auth_required = create_public_auth_dependency(
-    secret_key=settings.secret_key,
+    secret_key=settings.jwt_secret_key,
     issuer="firefeed-api",
     required=True
 )
 
 public_auth_optional = create_public_auth_dependency(
-    secret_key=settings.secret_key,
+    secret_key=settings.jwt_secret_key,
     issuer="firefeed-api",
     required=False
 )

@@ -84,7 +84,7 @@ def create_service_token(
         "type": "service"
     }
 
-    token = jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
+    token = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
     # Cache the token synchronously (no fire-and-forget)
     _add_to_cache(token, {
@@ -138,8 +138,8 @@ def verify_service_token(token: str) -> ServiceAuthResponse:
         # Decode JWT token - PyJWT automatically validates 'exp' and raises ExpiredSignatureError
         payload = jwt.decode(
             token,
-            settings.secret_key,
-            algorithms=[settings.algorithm],
+            settings.jwt_secret_key,
+            algorithms=[settings.jwt_algorithm],
             options={"require": ["exp"]}
         )
 

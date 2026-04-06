@@ -26,8 +26,8 @@ def verify_service_token(token: str) -> Dict[str, Any]:
     try:
         payload = pyjwt.decode(
             token,
-            settings.secret_key,
-            algorithms=[settings.algorithm],
+            settings.jwt_secret_key,
+            algorithms=[settings.jwt_algorithm],
             options={"require": ["exp"]}
         )
         service_name = payload.get("sub") or payload.get("service_name", "unknown")
@@ -464,7 +464,7 @@ async def generate_service_token(
             "iss": "firefeed-api"
         }
 
-        token = jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
+        token = jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
         return {
             "access_token": token,

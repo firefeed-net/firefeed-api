@@ -71,7 +71,7 @@ class TokenData(BaseModel):
 def get_service_token_manager():
     """Get service token manager for internal API communication."""
     return ServiceTokenManager(
-        secret_key=settings.secret_key,
+        secret_key=settings.jwt_secret_key,
         issuer="firefeed-api"
     )
 
@@ -92,7 +92,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
         expire = datetime.now(timezone.utc) + timedelta(minutes=30)
     to_encode.update({"exp": expire})
     encoded_jwt = ServiceTokenManager(
-        secret_key=settings.secret_key,
+        secret_key=settings.jwt_secret_key,
         issuer="firefeed-api"
     ).create_token(to_encode)
     return encoded_jwt

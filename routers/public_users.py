@@ -109,7 +109,7 @@ async def get_current_user(request: Request, api_client: APIClient = Depends()):
     try:
         # Verify token
         token_manager = ServiceTokenManager(
-            secret_key=settings.secret_key,
+            secret_key=settings.jwt_secret_key,
             issuer="firefeed-api"
         )
         payload = token_manager.verify_token(token)
