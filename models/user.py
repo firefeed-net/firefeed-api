@@ -3,39 +3,21 @@ from typing import Optional
 from datetime import datetime
 
 
-class UserBase(BaseModel):
-    email: EmailStr
-    username: str
-    full_name: Optional[str] = None
+# Use unified model from firefeed_core - no local definition needed
+# This file kept for backward compatibility imports only
+# All models now imported from firefeed_core.models.base_models
+from firefeed_core.models.base_models import (
+    User as _CoreUser,
+    UserResponse as _CoreUserResponse,
+    UserUpdate as _CoreUserUpdate,
+    UserCreate as _CoreUserCreate,
+)
+
+# Aliases for backward compatibility
+User = _CoreUser
+UserCreate = _CoreUserCreate
+UserUpdate = _CoreUserUpdate  
+UserResponse = _CoreUserResponse
 
 
-class UserCreate(UserBase):
-    password: str
-
-
-class UserUpdate(BaseModel):
-    email: Optional[EmailStr] = None
-    username: Optional[str] = None
-    full_name: Optional[str] = None
-    is_active: Optional[bool] = None
-
-
-class UserResponse(UserBase):
-    id: str
-    is_active: bool
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-
-
-class User(UserBase):
-    id: str
-    hashed_password: str
-    is_active: bool
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
+__all__ = ['User', 'UserCreate', 'UserUpdate', 'UserResponse']

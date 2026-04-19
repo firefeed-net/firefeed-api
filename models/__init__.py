@@ -1,17 +1,41 @@
 """
-Models package for FireFeed API
+Models package for FireFeed API.
 
 This package contains all the data models for the application.
+Models are imported from firefeed_core where applicable to avoid duplication.
+
+Note: Unified models are now imported from firefeed_core for consistency across services.
+Local definitions are only kept for models that don't exist in firefeed_core.
 """
 
-# Import models
+# Import unified models from firefeed_core (base_models.py is the single source of truth)
+from firefeed_core.models.base_models import (
+    UserResponse,
+    UserUpdate,
+    Token,
+)
+# UserCreate is defined in base_models as UserCreateRequest, use that
+from firefeed_core.models.base_models import UserCreate as UserCreate
+from firefeed_core.models.user_models import UserLogin
+from firefeed_core.models.base_models import (
+    Category,
+    CategoryItem,
+    Source,
+    SourceItem,
+    RSSFeed,
+    RSSItem,
+    UserRSSFeedCreateRequest,
+    UserRSSFeedUpdate,
+    UserCategoriesUpdate,
+)
+from firefeed_core.models.api_key_models import (
+    UserApiKeyCreate,
+    UserApiKeyUpdate,
+)
+
+# Other models still use local definitions (not in firefeed_core)
 from .base import Base
-from .user import User, UserCreate, UserUpdate, UserResponse
-from .api_key import APIKey, APIKeyCreate, APIKeyResponse
-from .category import Category, CategoryCreate, CategoryUpdate, CategoryResponse
-from .source import Source, SourceCreate, SourceUpdate, SourceResponse
-from .rss_feed import RSSFeed, RSSFeedCreate, RSSFeedUpdate, RSSFeedResponse
-from .rss_item import RSSItem, RSSItemCreate, RSSItemUpdate, RSSItemResponse
+from .api_key import APIKey, APIKeyResponse
 from .user_category import UserCategory
 from .user_rss_feed import UserRSSFeed
 from .user_session import UserSession
@@ -24,6 +48,16 @@ from .translation import Translation
 from .translation_cache import TranslationCache
 from .media_file import MediaFile
 from .media_cache import MediaCache
+from .user import User
+from .rss_item import RSSItemCreate, RSSItemUpdate
+
+# Alias for backward compatibility
+CategoryCreate = Category
+CategoryUpdate = Category
+SourceCreate = Source
+SourceUpdate = Source
+RSSFeedCreate = RSSFeed
+RSSFeedUpdate = RSSFeed
 
 # Import public models
 from .public_models import (
